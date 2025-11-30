@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"fmt"
 	"log"
@@ -44,25 +45,30 @@ func main() {
 
 	bob, _ := handshake.NewResponder(
 		handshake.KeyPair{Pk: bobPub, Sk: bobSec},
-		alicePub,
 		kemAlgo,
 		prologue,
 	)
 
 	// ===== Message 1: Alice -> Bob =====
-	fmt.Println("--- Message 1: Alice -> Bob ---")
+	fmt.Println("--- Message 1: Alice -> Bob (IK pattern) ---")
 	msg1, err := alice.BuildMsg1()
 	if err != nil {
 		log.Fatalf("Alice failed to build Msg1: %v", err)
 	}
-	fmt.Printf("✓ Alice sends: ephemeral key + 2 KEM ciphertexts\n")
+	fmt.Printf("✓ Alice sends: SKEM + ephemeral key + encrypted static key\n")
+	fmt.Printf("  - CTss (SKEM): %d bytes\n", len(msg1.CTss))
 	fmt.Printf("  - Ephemeral key: %d bytes\n", len(msg1.EI))
-	fmt.Printf("  - CTss: %d bytes\n\n", len(msg1.CTss))
+	fmt.Printf("  - Encrypted static key: %d bytes\n\n", len(msg1.EncSI))
 
-	// Bob processes Message 1
+	// Bob processes Message 1 and can now identify Alice
 	if err := bob.ProcessMsg1(msg1); err != nil {
 		log.Fatalf("Bob failed to process Msg1: %v", err)
 	}
+	
+	// Bob extracts and verifies Alice's identity
+	aliceIdentity := bob.GetInitiatorStaticKey()
+	fmt.Printf("✓ Bob identified initiator (Alice's public key extracted)\n")
+	fmt.Printf("  - Alice's static key matches: %v\n\n", bytes.Equal(aliceIdentity, alicePub))
 	fmt.Println("✓ Bob processed Message 1")
 	fmt.Println()
 
@@ -73,9 +79,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("Bob failed to build Msg2: %v", err)
 	}
-	fmt.Printf("✓ Bob sends: ephemeral key + 2 KEM ciphertexts\n")
-	fmt.Printf("  - CTse: %d bytes\n", len(msg2.CTse))
-	fmt.Printf("  - CTss: %d bytes\n\n", len(msg2.CTss))
+	fmt.Printf("✓ Bob sends: ephemeral key + EKEM + SKEM\n")
+	fmt.Printf("  - Ephemeral key: %d bytes\n", len(msg2.ER))
+	fmt.Printf("  - CTee (EKEM): %d bytes\n", len(msg2.CTee))
+	fmt.Printf("  - CTse (SKEM): %d bytes\n\n", len(msg2.CTse))
 
 	// Alice processes Message 2
 	if err := alice.ProcessMsg2(msg2); err != nil {

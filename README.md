@@ -34,26 +34,30 @@ This creates:
 - `sntrup761` - Streamlined NTRU Prime
 
 ### 3-Message Handshake Protocol
-Based on Noise KK pattern with post-quantum KEMs:
+Based on post-quantum IK pattern (pqIK) with KEMs for identity hiding and peer identification:
 
 **Pre-conditions:**
-- Both parties know each other's static public keys of the chosen KEM algorithm
+- Responder's static public key is known to the initiator
+- Initiator's identity is hidden until decrypted by responder
 
 **Message 1** (Initiator → Responder)
 ```
--> e, skem(sr)
+-> skem, e, s
 ```
+- `CT_ss`: SKEM - Initiator static encapsulates to responder's static key
 - `EI`: Initiator's ephemeral public key
-- `CT_ss`: KEM ciphertext (initiator's static → responder's static)
-- **Key schedule**: mixHash(EI), mixKey(ss_ss)
+- `EncSI`: **Encrypted initiator's static public key** (identity hiding!)
+- **Key schedule**: mixKey(ss_ss), mixHash(CT_ss), mixHash(EI), encryptAndHash(SI)
+- **Identity hiding**: Passive observers cannot determine who is connecting
 
 **Message 2** (Responder → Initiator)
 ```
-<- ekem(ei), skem(si)
+<- ekem, skem
 ```
-- `CT_se`: KEM ciphertext (responder's ephemeral → initiator's ephemeral)
-- `CT_ss`: KEM ciphertext (responder's static → initiator's static)
-- **Key schedule**: mixKey(ss_se), mixKey(ss_ss)
+- `ER`: Responder's ephemeral public key
+- `CT_ee`: EKEM - Responder ephemeral encapsulates to initiator's ephemeral key
+- `CT_se`: SKEM - Responder static encapsulates to initiator's static key
+- **Key schedule**: mixHash(ER), mixKey(ss_ee), mixHash(CT_ee), mixKey(ss_se), mixHash(CT_se)
 - Both parties derive the **32-byte shared key** using HKDF-Expand(ck, "shared", 32)
 
 **Message 3** (Initiator → Responder)
@@ -69,7 +73,11 @@ Both parties derive an identical **32-byte shared key** after Message 2, confirm
 
 ### Daemon Mode
 
-Run as a daemon that maintains continuous key exchange with a peer:
+QuantShake supports two modes: **single-peer** (command-line flags) and **multi-peer** (TOML configuration).
+
+#### Single-Peer Mode
+
+Run as a daemon that maintains continuous key exchange with one peer:
 
 ```bash
 ./quantshake daemon \
@@ -94,6 +102,44 @@ Or using short flags (WireGuard-style):
 - `--peer-public-key`, `-p` - Path to peer's public key file (required)
 - `--output`, `-o` - Output PSK file path (required)
 - `--interval`, `-i` - Seconds between key exchanges (default: `120`)
+
+#### Multi-Peer Mode
+
+For managing multiple peers simultaneously, use a TOML configuration file:
+
+```bash
+./quantshake daemon --config peers.toml
+```
+
+**Example Configuration** (`peers.toml`):
+```toml
+[daemon]
+listen_addr = "0.0.0.0:8000"  # Optional: omit for outgoing-only mode
+private_key = "/etc/quantshake/mykey.sec"
+interval = 120  # Default interval for all peers
+
+# Bidirectional peer (we both connect to each other)
+[[peers]]
+name = "alice"
+public_key = "/etc/quantshake/alice.pub"
+endpoint = "alice.example.com:8000"
+output_psk = "/var/lib/quantshake/alice.psk"
+
+# Outgoing-only peer (we initiate, they don't connect to us)
+[[peers]]
+name = "bob"
+public_key = "/etc/quantshake/bob.pub"
+endpoint = "10.0.1.5:8000"
+output_psk = "/var/lib/quantshake/bob.psk"
+interval = 60  # Custom interval for this peer
+
+# Incoming-only peer (they initiate, we accept)
+[[peers]]
+name = "charlie"
+public_key = "/etc/quantshake/charlie.pub"
+# No endpoint - charlie will connect to us
+output_psk = "/var/lib/quantshake/charlie.psk"
+```
 
 Use `./quantshake daemon --help` for complete usage information.
 
@@ -147,35 +193,50 @@ cat bob.psk
 
 ## Architecture
 
+### Core Files
+- **main.go** - CLI interface and command handling
+- **daemon.go** - Single-peer daemon with retry logic and role negotiation
+- **multipeer.go** - Multi-peer daemon with automatic peer identification
+- **config.go** - TOML configuration parsing and validation
+- **keygen.go** - Key generation utilities
+
+### Handshake Package (`pkg/handshake/`)
+- **noiseik.go** - Noise IK pattern implementation with PQC KEMs
+- **noiseik_test.go** - Comprehensive handshake protocol tests
+
+### KEM Package (`pkg/kem/`)
 - **kem.go** - KEM interface and factory functions
-- **mlkem.go** - ML-KEM-768 implementation
-- **xwing.go** - X-Wing hybrid KEM implementation
-- **sntrup761.go** - sntrup761 implementation
-- **main.go** - Handshake protocol and command handling
-- **daemon.go** - Network daemon and peer management
+- **mlkem.go** - ML-KEM-768 (NIST standardized) implementation
+- **xwing.go** - X-Wing hybrid KEM (X25519 + ML-KEM-768)
+- **sntrup761.go** - Streamlined NTRU Prime implementation
 
 ## Protocol Details
 
-### Noise KK Pattern with PQC KEMs
+### Post-Quantum IK Pattern (pqIK)
 
-QuantShake implements a modified Noise KK handshake pattern adapted for post-quantum KEMs:
+QuantShake implements a post-quantum IK handshake pattern optimized for KEMs:
 
 **Key Features:**
-- **Pre-shared static keys**: Both parties know each other's static public keys before handshake
-- **Four KEM operations**: Two in each direction for defense in depth
-  - Ephemeral-to-static (forward secrecy)
-  - Static-to-static (mutual authentication)
+- **Identity hiding**: Initiator's static public key is encrypted in Message 1
+- **Peer identification**: Responder can identify which peer is connecting after decrypting Message 1
+- **Three KEM operations**: Optimized for post-quantum efficiency
+  - skem (Msg1): Initiator static → responder static (authentication, starts encryption)
+  - ekem (Msg2): Responder ephemeral → initiator ephemeral (forward secrecy)
+  - skem (Msg2): Responder static → initiator static (authentication)
 - **Key schedule**: HKDF-based (HMAC-SHA256) with chaining key and hash
-- **AEAD encryption**: ChaCha20-Poly1305 for Message 3 authentication
+- **AEAD encryption**: ChaCha20-Poly1305 for encrypting initiator's static key and Message 3
 - **Three-message pattern**: Essential for full mutual authentication with PQC
 
 ### KEM Operations Breakdown
 
 | Message | Direction | Operation | Purpose |
 |---------|-----------|-----------|---------|
-| Msg1 | I → R | skem(SR) | Initiator's static to responder's static (authentication) |
-| Msg2 | R → I | ekem(EI) | Responder's ephemeral to initiator's ephemeral (forward secrecy) |
-| Msg2 | R → I | skem(SI) | Responder's static to initiator's static (authentication) |
+| Msg1 | I → R | skem | Initiator static → responder static (authentication, starts encryption) |
+| Msg1 | I → R | e | Initiator ephemeral public key (in cleartext) |
+| Msg1 | I → R | encrypt(SI) | Encrypted initiator static key (identity hiding) |
+| Msg2 | R → I | e | Responder ephemeral public key (in cleartext) |
+| Msg2 | R → I | ekem | Responder ephemeral → initiator ephemeral (forward secrecy) |
+| Msg2 | R → I | skem | Responder static → initiator static (authentication) |
 
 ### Key Derivation
 

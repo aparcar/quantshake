@@ -1,4 +1,4 @@
-// Package handshake — PQ Noise KK-style KEM handshake (single final key)
+// Package handshake — Post-Quantum IK (pqIK) KEM handshake
 
 package handshake
 
@@ -63,6 +63,60 @@ func newKeySchedule(proto string) *keySchedule {
 		h:  ph[:],
 		ck: ph[:],
 	}
+}
+
+// encryptAndHash encrypts plaintext and mixes the ciphertext into the transcript
+func (ks *keySchedule) encryptAndHash(plaintext []byte) ([]byte, error) {
+	// For IK pattern: use current chaining key to derive encryption key
+	prk := hkdfExtract(ks.ck, nil)
+	key := hkdfExpand(prk, []byte("encrypt"), 32)
+	defer zeroBytes(key)
+	defer zeroBytes(prk)
+
+	// Derive nonce from the key and current hash
+	nonce, err := deriveAckNonce(key, ks.h)
+	if err != nil {
+		return nil, err
+	}
+
+	a, err := chacha20poly1305.New(key)
+	if err != nil {
+		return nil, err
+	}
+
+	// #nosec G407 - Nonce is cryptographically derived via HKDF
+	ciphertext := a.Seal(nil, nonce[:], plaintext, ks.h)
+	ks.mixHash(ciphertext)
+	return ciphertext, nil
+}
+
+// decryptAndHash decrypts ciphertext and mixes it into the transcript
+func (ks *keySchedule) decryptAndHash(ciphertext []byte) ([]byte, error) {
+	// For IK pattern: use current chaining key to derive encryption key
+	prk := hkdfExtract(ks.ck, nil)
+	key := hkdfExpand(prk, []byte("encrypt"), 32)
+	defer zeroBytes(key)
+	defer zeroBytes(prk)
+
+	// Derive nonce from the key and current hash
+	nonce, err := deriveAckNonce(key, ks.h)
+	if err != nil {
+		return nil, err
+	}
+
+	a, err := chacha20poly1305.New(key)
+	if err != nil {
+		return nil, err
+	}
+
+	// #nosec G407 - Nonce is cryptographically derived via HKDF
+	plaintext, err := a.Open(nil, nonce[:], ciphertext, ks.h)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt failed: %w", err)
+	}
+
+	ks.mixHash(ciphertext)
+	return plaintext, nil
 }
 
 func (ks *keySchedule) mixHash(data []byte) {
@@ -147,13 +201,15 @@ type Responder struct {
 // ------------------------ Messages ------------------------
 
 type Msg1 struct {
-	EI   []byte // initiator ephemeral public key
-	CTss []byte // SKEM to responder static
+	CTss  []byte // SKEM ciphertext (encapsulated to responder's static key)
+	EI    []byte // initiator ephemeral public key
+	EncSI []byte // encrypted initiator static public key
 }
 
 type Msg2 struct {
-	CTse []byte // EKEM to initiator ephemeral
-	CTss []byte // SKEM to initiator static
+	ER   []byte // responder ephemeral public key
+	CTee []byte // EKEM ciphertext (encapsulated to initiator's ephemeral key)
+	CTse []byte // SKEM ciphertext (encapsulated to initiator's static key)
 }
 
 type Msg3 struct {
@@ -173,63 +229,73 @@ func NewInitiator(si KeyPair, sr []byte, kem KEM, prologue []byte) (*Initiator, 
 		return nil, fmt.Errorf("invalid initiator public key: %w", err)
 	}
 
-	ks := newKeySchedule("Noise_KK_PQKEM_ChaChaPoly_SHA256")
+	ks := newKeySchedule("pqIK_PQKEM_ChaChaPoly_SHA256")
 	ks.mixHash(prologue)
-	// Pre-messages in KK: -> s, <- s
-	ks.mixHash(si.Pk) // initiator static first
-	ks.mixHash(sr)    // responder static second
+	// Pre-message in IK: <- s (only responder's static key is known)
+	ks.mixHash(sr)
 	return &Initiator{si: si, sr: sr, kem: kem, ks: ks}, nil
 }
 
 func (i *Initiator) BuildMsg1() (*Msg1, error) {
+	// -> skem (encapsulate to responder's static key)
+	ctSS, ssSS, err := i.kem.Encapsulate(i.sr, rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("ss encapsulation failed: %w", err)
+	}
+	defer zeroBytes(ssSS)
+	i.ks.mixKey(ssSS)
+	i.ks.mixHash(ctSS)
+
+	// Generate ephemeral key
 	eiPk, eiSk, err := i.kem.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("ephemeral key generation failed: %w", err)
 	}
 	i.ei = KeyPair{Pk: eiPk, Sk: eiSk}
 
-	// mix eI
+	// -> e
 	i.ks.mixHash(i.ei.Pk)
 
-	// SKEM to responder static
-	ctSKEM, ssSKEM, err := i.kem.Encapsulate(i.sr, rand.Reader)
+	// -> s (encrypted initiator static public key)
+	encSI, err := i.ks.encryptAndHash(i.si.Pk)
 	if err != nil {
-		return nil, fmt.Errorf("SKEM I->R failed: %w", err)
+		return nil, fmt.Errorf("failed to encrypt static key: %w", err)
 	}
-	defer zeroBytes(ssSKEM) // Zero shared secret after use
 
-	// mixKey and mixHash(ciphertext)
-	i.ks.mixKey(ssSKEM)
-	i.ks.mixHash(ctSKEM)
-
-	return &Msg1{EI: i.ei.Pk, CTss: ctSKEM}, nil
+	return &Msg1{CTss: ctSS, EI: i.ei.Pk, EncSI: encSI}, nil
 }
 
 func (i *Initiator) ProcessMsg2(m2 *Msg2) error {
-	// mix ciphertexts into transcript in on-the-wire order
+	// Validate responder's ephemeral public key
+	if err := i.kem.ValidatePublicKey(m2.ER); err != nil {
+		return fmt.Errorf("invalid responder ephemeral public key: %w", err)
+	}
+
+	// <- e
+	i.ks.mixHash(m2.ER)
+
+	// <- ekem (decapsulate with initiator's ephemeral key)
+	i.ks.mixHash(m2.CTee)
+	ssEE, err := i.kem.Decapsulate(m2.CTee, i.ei.Sk)
+	if err != nil {
+		return fmt.Errorf("ee decapsulation failed: %w", err)
+	}
+	defer zeroBytes(ssEE)
+	i.ks.mixKey(ssEE)
+
+	// <- skem (decapsulate with initiator's static key)
 	i.ks.mixHash(m2.CTse)
-	i.ks.mixHash(m2.CTss)
-
-	// Decap EKEM to our ephemeral
-	ssEKEM, err := i.kem.Decapsulate(m2.CTse, i.ei.Sk)
+	ssSE, err := i.kem.Decapsulate(m2.CTse, i.si.Sk)
 	if err != nil {
-		return fmt.Errorf("decapsulate EKEM failed: %w", err)
+		return fmt.Errorf("se decapsulation failed: %w", err)
 	}
-	defer zeroBytes(ssEKEM) // Zero shared secret after use
-	i.ks.mixKey(ssEKEM)
-
-	// Decap SKEM to our static
-	ssSKEM, err := i.kem.Decapsulate(m2.CTss, i.si.Sk)
-	if err != nil {
-		return fmt.Errorf("decapsulate SKEM failed: %w", err)
-	}
-	defer zeroBytes(ssSKEM) // Zero shared secret after use
-	i.ks.mixKey(ssSKEM)
+	defer zeroBytes(ssSE)
+	i.ks.mixKey(ssSE)
 
 	// Zero ephemeral secret key (no longer needed)
 	zeroBytes(i.ei.Sk)
 
-	// finalize transcript and derive single key
+	// Finalize transcript and derive single key
 	i.hFinal = append([]byte{}, i.ks.h...)
 	i.sharedKey = hkdfExpand(i.ks.ck, []byte("shared"), 32)
 	return nil
@@ -270,70 +336,98 @@ func (i *Initiator) Destroy() {
 
 // ------------------------ Responder ------------------------
 
-func NewResponder(sr KeyPair, si []byte, kem KEM, prologue []byte) (*Responder, error) {
-	// Validate initiator's static public key
-	if err := kem.ValidatePublicKey(si); err != nil {
-		return nil, fmt.Errorf("invalid initiator public key: %w", err)
-	}
-
+// NewResponder creates a new responder for IK pattern
+// In IK, the responder doesn't know the initiator's static key yet
+func NewResponder(sr KeyPair, kem KEM, prologue []byte) (*Responder, error) {
 	// Validate our own static public key
 	if err := kem.ValidatePublicKey(sr.Pk); err != nil {
 		return nil, fmt.Errorf("invalid responder public key: %w", err)
 	}
 
-	ks := newKeySchedule("Noise_KK_PQKEM_ChaChaPoly_SHA256")
+	ks := newKeySchedule("pqIK_PQKEM_ChaChaPoly_SHA256")
 	ks.mixHash(prologue)
-	// Pre-messages in KK: -> s, <- s
-	ks.mixHash(si)     // initiator static first
-	ks.mixHash(sr.Pk)  // responder static second
-	return &Responder{sr: sr, si: si, kem: kem, ks: ks}, nil
+	// Pre-message in IK: <- s (only responder's static key is known)
+	ks.mixHash(sr.Pk)
+	return &Responder{sr: sr, kem: kem, ks: ks}, nil
 }
 
 func (r *Responder) ProcessMsg1(m1 *Msg1) error {
+	// -> skem (decapsulate with responder's static key)
+	r.ks.mixHash(m1.CTss)
+	ssSS, err := r.kem.Decapsulate(m1.CTss, r.sr.Sk)
+	if err != nil {
+		return fmt.Errorf("ss decapsulation failed: %w", err)
+	}
+	defer zeroBytes(ssSS)
+	r.ks.mixKey(ssSS)
+
 	// Validate initiator's ephemeral public key
 	if err := r.kem.ValidatePublicKey(m1.EI); err != nil {
 		return fmt.Errorf("invalid initiator ephemeral public key: %w", err)
 	}
 
-	// store eI, mix eI and ct_ss
+	// -> e
 	r.ei = m1.EI
 	r.ks.mixHash(m1.EI)
-	r.ks.mixHash(m1.CTss)
 
-	// Decap SKEM to responder static
-	ssSS, err := r.kem.Decapsulate(m1.CTss, r.sr.Sk)
+	// -> s (decrypt initiator static public key)
+	siPk, err := r.ks.decryptAndHash(m1.EncSI)
 	if err != nil {
-		return fmt.Errorf("decapsulate ss failed: %w", err)
+		return fmt.Errorf("failed to decrypt static key: %w", err)
 	}
-	defer zeroBytes(ssSS) // Zero shared secret after use
-	r.ks.mixKey(ssSS)
+
+	// Validate initiator's static public key
+	if err := r.kem.ValidatePublicKey(siPk); err != nil {
+		return fmt.Errorf("invalid initiator static public key: %w", err)
+	}
+	r.si = siPk
+
 	return nil
 }
 
+// GetInitiatorStaticKey returns the initiator's static public key
+// This is only available after ProcessMsg1 has been called successfully
+func (r *Responder) GetInitiatorStaticKey() []byte {
+	if len(r.si) == 0 {
+		return nil
+	}
+	return append([]byte(nil), r.si...)
+}
+
 func (r *Responder) BuildMsg2() (*Msg2, error) {
-	// EKEM to initiator ephemeral (from Msg1)
-	ctEKEM, ssEKEM, err := r.kem.Encapsulate(r.ei, rand.Reader)
+	// Generate responder ephemeral key
+	erPk, erSk, err := r.kem.GenerateKey(rand.Reader)
 	if err != nil {
-		return nil, fmt.Errorf("EKEM failed: %w", err)
+		return nil, fmt.Errorf("ephemeral key generation failed: %w", err)
 	}
-	defer zeroBytes(ssEKEM) // Zero shared secret after use
-	r.ks.mixKey(ssEKEM)
-	r.ks.mixHash(ctEKEM)
+	defer zeroBytes(erSk) // Will be zeroed after use, not stored
 
-	// SKEM to initiator static
-	ctSKEM, ssSKEM, err := r.kem.Encapsulate(r.si, rand.Reader)
+	// <- e
+	r.ks.mixHash(erPk)
+
+	// <- ekem (encapsulate to initiator's ephemeral key)
+	ctEE, ssEE, err := r.kem.Encapsulate(r.ei, rand.Reader)
 	if err != nil {
-		return nil, fmt.Errorf("SKEM R->I failed: %w", err)
+		return nil, fmt.Errorf("ee encapsulation failed: %w", err)
 	}
-	defer zeroBytes(ssSKEM) // Zero shared secret after use
-	r.ks.mixKey(ssSKEM)
-	r.ks.mixHash(ctSKEM)
+	defer zeroBytes(ssEE)
+	r.ks.mixKey(ssEE)
+	r.ks.mixHash(ctEE)
 
-	// finalize transcript and derive single key
+	// <- skem (encapsulate to initiator's static key)
+	ctSE, ssSE, err := r.kem.Encapsulate(r.si, rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("se encapsulation failed: %w", err)
+	}
+	defer zeroBytes(ssSE)
+	r.ks.mixKey(ssSE)
+	r.ks.mixHash(ctSE)
+
+	// Finalize transcript and derive single key
 	r.hFinal = append([]byte{}, r.ks.h...)
 	r.sharedKey = hkdfExpand(r.ks.ck, []byte("shared"), 32)
 
-	return &Msg2{CTse: ctEKEM, CTss: ctSKEM}, nil
+	return &Msg2{ER: erPk, CTee: ctEE, CTse: ctSE}, nil
 }
 
 func (r *Responder) ProcessMsg3(m3 *Msg3) error {

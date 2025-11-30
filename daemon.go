@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -516,9 +517,9 @@ func (d *Daemon) handleResponderRole(conn net.Conn) {
 func (d *Daemon) performResponderHandshake(conn net.Conn) error {
 	_ = conn.SetDeadline(time.Now().Add(30 * time.Second)) // Best effort deadline
 
-	// Create responder with prologue
+	// Create responder with prologue (IK pattern - we don't know initiator's key yet)
 	prologue := []byte("pqc-key-exchange-v2")
-	resp, err := handshake.NewResponder(handshake.KeyPair{Sk: d.mySecretKey, Pk: d.myPublicKey}, d.peerPublicKey, d.kem, prologue)
+	resp, err := handshake.NewResponder(handshake.KeyPair{Sk: d.mySecretKey, Pk: d.myPublicKey}, d.kem, prologue)
 	if err != nil {
 		return fmt.Errorf("failed to create responder: %w", err)
 	}
@@ -547,6 +548,12 @@ func (d *Daemon) performResponderHandshake(conn net.Conn) error {
 	err = resp.ProcessMsg1(&m1)
 	if err != nil {
 		return fmt.Errorf("failed to process msg1: %w", err)
+	}
+
+	// Validate that the initiator's static key matches our expected peer
+	initiatorStaticKey := resp.GetInitiatorStaticKey()
+	if !bytes.Equal(initiatorStaticKey, d.peerPublicKey) {
+		return fmt.Errorf("initiator static key does not match expected peer")
 	}
 
 	// Build and send Message 2

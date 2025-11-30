@@ -3,6 +3,7 @@ module quantshake
 go 1.24.0
 
 require (
+	github.com/BurntSushi/toml v1.4.0
 	github.com/cloudflare/circl v1.6.1
 	github.com/companyzero/sntrup4591761 v0.0.0-20220309191932-9e0f3af2f07a
 	github.com/spf13/cobra v1.10.1
