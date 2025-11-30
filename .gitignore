@@ -2,6 +2,8 @@
 *.psk
 *.pub
 *.sec
-*.sh
 quantshake
-tests/
+
+# Ignore test output directories but keep test scripts
+tests/test_output/
+tests/test_output_3peer/
