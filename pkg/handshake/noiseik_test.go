@@ -235,7 +235,7 @@ func TestFullHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create initiator: %v", err)
 	}
-	responder, err := NewResponder(KeyPair{Pk: rPk, Sk: rSk}, iPk, kem, prologue)
+	responder, err := NewResponder(KeyPair{Pk: rPk, Sk: rSk}, kem, prologue)
 	if err != nil {
 		t.Fatalf("Failed to create responder: %v", err)
 	}
@@ -246,16 +246,28 @@ func TestFullHandshake(t *testing.T) {
 		t.Fatalf("BuildMsg1 failed: %v", err)
 	}
 
+	if msg1.CTss == nil || len(msg1.CTss) != kem.ctSize {
+		t.Errorf("Msg1.CTss has wrong size: got %d, want %d", len(msg1.CTss), kem.ctSize)
+	}
 	if msg1.EI == nil || len(msg1.EI) != kem.pkSize {
 		t.Errorf("Msg1.EI has wrong size: got %d, want %d", len(msg1.EI), kem.pkSize)
 	}
-	if msg1.CTss == nil || len(msg1.CTss) != kem.ctSize {
-		t.Errorf("Msg1.CTss has wrong size: got %d, want %d", len(msg1.CTss), kem.ctSize)
+	if msg1.EncSI == nil {
+		t.Errorf("Msg1.EncSI is nil")
 	}
 
 	err = responder.ProcessMsg1(msg1)
 	if err != nil {
 		t.Fatalf("ProcessMsg1 failed: %v", err)
+	}
+
+	// Verify responder can extract initiator's static key (IK pattern)
+	extractedInitiatorKey := responder.GetInitiatorStaticKey()
+	if extractedInitiatorKey == nil {
+		t.Fatalf("GetInitiatorStaticKey returned nil")
+	}
+	if !bytes.Equal(extractedInitiatorKey, iPk) {
+		t.Errorf("Extracted initiator key does not match: got %x, want %x", extractedInitiatorKey[:8], iPk[:8])
 	}
 
 	// Message 2: R -> I
@@ -264,11 +276,14 @@ func TestFullHandshake(t *testing.T) {
 		t.Fatalf("BuildMsg2 failed: %v", err)
 	}
 
+	if msg2.ER == nil || len(msg2.ER) != kem.pkSize {
+		t.Errorf("Msg2.ER has wrong size: got %d, want %d", len(msg2.ER), kem.pkSize)
+	}
+	if msg2.CTee == nil || len(msg2.CTee) != kem.ctSize {
+		t.Errorf("Msg2.CTee has wrong size: got %d, want %d", len(msg2.CTee), kem.ctSize)
+	}
 	if msg2.CTse == nil || len(msg2.CTse) != kem.ctSize {
 		t.Errorf("Msg2.CTse has wrong size: got %d, want %d", len(msg2.CTse), kem.ctSize)
-	}
-	if msg2.CTss == nil || len(msg2.CTss) != kem.ctSize {
-		t.Errorf("Msg2.CTss has wrong size: got %d, want %d", len(msg2.CTss), kem.ctSize)
 	}
 
 	err = initiator.ProcessMsg2(msg2)
@@ -330,7 +345,7 @@ func TestHandshakeWithDifferentPrologues(t *testing.T) {
 	// First handshake with prologue1
 	prologue1 := []byte("prologue1")
 	initiator1, _ := NewInitiator(KeyPair{Pk: iPk, Sk: iSk}, rPk, kem, prologue1)
-	responder1, _ := NewResponder(KeyPair{Pk: rPk, Sk: rSk}, iPk, kem, prologue1)
+	responder1, _ := NewResponder(KeyPair{Pk: rPk, Sk: rSk}, kem, prologue1)
 
 	msg1_1, _ := initiator1.BuildMsg1()
 	_ = responder1.ProcessMsg1(msg1_1)
@@ -344,7 +359,7 @@ func TestHandshakeWithDifferentPrologues(t *testing.T) {
 	// Second handshake with prologue2
 	prologue2 := []byte("prologue2")
 	initiator2, _ := NewInitiator(KeyPair{Pk: iPk, Sk: iSk}, rPk, kem, prologue2)
-	responder2, _ := NewResponder(KeyPair{Pk: rPk, Sk: rSk}, iPk, kem, prologue2)
+	responder2, _ := NewResponder(KeyPair{Pk: rPk, Sk: rSk}, kem, prologue2)
 
 	msg1_2, _ := initiator2.BuildMsg1()
 	_ = responder2.ProcessMsg1(msg1_2)
@@ -379,7 +394,7 @@ func TestHandshakeMsg3Tampering(t *testing.T) {
 
 	// Create initiator and responder
 	initiator, _ := NewInitiator(KeyPair{Pk: iPk, Sk: iSk}, rPk, kem, prologue)
-	responder, _ := NewResponder(KeyPair{Pk: rPk, Sk: rSk}, iPk, kem, prologue)
+	responder, _ := NewResponder(KeyPair{Pk: rPk, Sk: rSk}, kem, prologue)
 
 	// Complete handshake up to Msg3
 	msg1, _ := initiator.BuildMsg1()
@@ -403,7 +418,7 @@ func TestHandshakeMsg3Tampering(t *testing.T) {
 
 	// Verify original message still works
 	initiator2, _ := NewInitiator(KeyPair{Pk: iPk, Sk: iSk}, rPk, kem, prologue)
-	responder2, _ := NewResponder(KeyPair{Pk: rPk, Sk: rSk}, iPk, kem, prologue)
+	responder2, _ := NewResponder(KeyPair{Pk: rPk, Sk: rSk}, kem, prologue)
 
 	msg1_2, _ := initiator2.BuildMsg1()
 	_ = responder2.ProcessMsg1(msg1_2)
@@ -429,7 +444,7 @@ func TestHandshakeWrongStaticKeys(t *testing.T) {
 
 	// Initiator has wrong responder public key
 	initiator, _ := NewInitiator(KeyPair{Pk: iPk, Sk: iSk}, wrongPk, kem, prologue)
-	responder, _ := NewResponder(KeyPair{Pk: rPk, Sk: rSk}, iPk, kem, prologue)
+	responder, _ := NewResponder(KeyPair{Pk: rPk, Sk: rSk}, kem, prologue)
 
 	msg1, _ := initiator.BuildMsg1()
 
@@ -456,7 +471,7 @@ func TestMultipleHandshakes(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		initiator, _ := NewInitiator(KeyPair{Pk: iPk, Sk: iSk}, rPk, kem, prologue)
-		responder, _ := NewResponder(KeyPair{Pk: rPk, Sk: rSk}, iPk, kem, prologue)
+		responder, _ := NewResponder(KeyPair{Pk: rPk, Sk: rSk}, kem, prologue)
 
 		msg1, _ := initiator.BuildMsg1()
 		_ = responder.ProcessMsg1(msg1)
@@ -512,7 +527,7 @@ func BenchmarkFullHandshake(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		initiator, _ := NewInitiator(KeyPair{Pk: iPk, Sk: iSk}, rPk, kem, prologue)
-		responder, _ := NewResponder(KeyPair{Pk: rPk, Sk: rSk}, iPk, kem, prologue)
+		responder, _ := NewResponder(KeyPair{Pk: rPk, Sk: rSk}, kem, prologue)
 
 		msg1, _ := initiator.BuildMsg1()
 		_ = responder.ProcessMsg1(msg1)
@@ -555,7 +570,7 @@ func BenchmarkBuildMsg2(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		responder, _ := NewResponder(KeyPair{Pk: rPk, Sk: rSk}, iPk, kem, prologue)
+		responder, _ := NewResponder(KeyPair{Pk: rPk, Sk: rSk}, kem, prologue)
 		_ = responder.ProcessMsg1(msg1)
 		_, _ = responder.BuildMsg2()
 	}

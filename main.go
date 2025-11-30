@@ -180,8 +180,26 @@ var genkeyCmd = &cobra.Command{
 var daemonCmd = &cobra.Command{
 	Use:   "daemon",
 	Short: "Run as daemon with periodic key exchange",
-	Long:  "Run as a daemon that maintains continuous key exchange with a peer.",
+	Long:  "Run as a daemon that maintains continuous key exchange with peer(s). Can use either flags for single peer or --config for multiple peers.",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		configFile, _ := cmd.Flags().GetString("config")
+
+		// If config file provided, use multi-peer mode
+		if configFile != "" {
+			config, err := LoadConfig(configFile)
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+
+			mpd, err := NewMultiPeerDaemon(config)
+			if err != nil {
+				return fmt.Errorf("failed to create multi-peer daemon: %w", err)
+			}
+
+			return mpd.Start()
+		}
+
+		// Otherwise, use single-peer mode with flags
 		listenAddr, _ := cmd.Flags().GetString("listen")
 		endpoint, _ := cmd.Flags().GetString("endpoint")
 		privateKey, _ := cmd.Flags().GetString("private-key")
@@ -224,12 +242,13 @@ func init() {
 	genkeyCmd.Flags().String("name", "key", "Key name (creates <name>.pub and <name>.sec)")
 
 	// Daemon command flags
-	daemonCmd.Flags().String("listen", "127.0.0.1:8000", "Listen address")
-	daemonCmd.Flags().StringP("endpoint", "e", "127.0.0.1:8001", "Peer endpoint address")
-	daemonCmd.Flags().StringP("private-key", "k", "", "Path to our private key file (required)")
-	daemonCmd.Flags().StringP("peer-public-key", "p", "", "Path to peer's public key file (required)")
-	daemonCmd.Flags().StringP("output", "o", "", "Output PSK file path (required)")
-	daemonCmd.Flags().IntP("interval", "i", 120, "Key exchange interval in seconds")
+	daemonCmd.Flags().StringP("config", "c", "", "Path to TOML configuration file (for multi-peer mode)")
+	daemonCmd.Flags().String("listen", "127.0.0.1:8000", "Listen address (single-peer mode)")
+	daemonCmd.Flags().StringP("endpoint", "e", "127.0.0.1:8001", "Peer endpoint address (single-peer mode)")
+	daemonCmd.Flags().StringP("private-key", "k", "", "Path to our private key file (required in single-peer mode)")
+	daemonCmd.Flags().StringP("peer-public-key", "p", "", "Path to peer's public key file (required in single-peer mode)")
+	daemonCmd.Flags().StringP("output", "o", "", "Output PSK file path (required in single-peer mode)")
+	daemonCmd.Flags().IntP("interval", "i", 120, "Key exchange interval in seconds (single-peer mode)")
 
 	// Add commands to root
 	rootCmd.AddCommand(genkeyCmd)
