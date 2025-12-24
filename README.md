@@ -100,8 +100,12 @@ Or using short flags (WireGuard-style):
 - `--endpoint`, `-e` - Peer endpoint address to connect to (default: `127.0.0.1:8001`)
 - `--private-key`, `-k` - Path to our private key file (required)
 - `--peer-public-key`, `-p` - Path to peer's public key file (required)
-- `--output`, `-o` - Output PSK file path (required)
+- `--output`, `-o` - Output PSK file path (optional if using WireGuard)
 - `--interval`, `-i` - Seconds between key exchanges (default: `120`)
+- `--wg-interface` - WireGuard interface name to inject PSK into (must be used with `--wg-peer-public-key`)
+- `--wg-peer-public-key` - WireGuard peer public key for PSK injection (must be used with `--wg-interface`)
+
+**Note:** You must specify either `--output` (PSK file) or both `--wg-interface` and `--wg-peer-public-key` (WireGuard injection), or both.
 
 #### Multi-Peer Mode
 
@@ -160,6 +164,51 @@ fRJwyfnGRI1+iObYEpSamMuAkWbiiq4ka+ZjoOyunrM=
 ```
 
 This is a 32-byte (256-bit) key encoded in base64, suitable for direct use with symmetric encryption.
+
+### WireGuard Integration
+
+QuantShake can automatically inject the generated PSK into a WireGuard interface using netlink. This allows you to use post-quantum key exchange to continuously rotate the pre-shared keys in your WireGuard tunnels.
+
+**Single-Peer Mode:**
+```bash
+./quantshake daemon \
+  --listen 127.0.0.1:9001 \
+  --endpoint 127.0.0.1:9002 \
+  --private-key peer1.sec \
+  --peer-public-key peer2.pub \
+  --output alice.psk \
+  --interval 120 \
+  --wg-interface wg0 \
+  --wg-peer-public-key "BASE64_ENCODED_WIREGUARD_PEER_PUBLIC_KEY="
+```
+
+**Multi-Peer Mode (TOML config):**
+```toml
+[[peers]]
+name = "alice"
+public_key = "/etc/quantshake/alice.pub"
+endpoint = "alice.example.com:8000"
+wg_interface = "wg0"
+wg_peer_public_key = "BASE64_ENCODED_WIREGUARD_PEER_PUBLIC_KEY="
+# output_psk = "/var/lib/quantshake/alice.psk"  # Optional if using WireGuard
+```
+
+**How it works:**
+1. QuantShake performs the post-quantum handshake with the peer
+2. The derived 32-byte shared key is saved to the PSK file
+3. The PSK is automatically injected into the specified WireGuard interface for the specified peer
+4. WireGuard immediately starts using the new PSK for additional security
+5. Keys are rotated at the configured interval (default: 120 seconds)
+
+**Requirements:**
+- WireGuard interface must already exist and be configured
+- The WireGuard peer must already be configured in the interface
+- QuantShake needs permission to configure WireGuard devices via netlink (typically requires root or CAP_NET_ADMIN)
+
+**Security Benefits:**
+- Post-quantum security: Even if quantum computers break your WireGuard keys, the PSK remains secure
+- Key rotation: Fresh keys every interval reduce the impact of potential key compromise
+- Defense in depth: Combines WireGuard's existing security with post-quantum KEMs
 
 ## Usage Examples
 

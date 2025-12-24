@@ -97,12 +97,14 @@ func LoadSharedKeyPSK(filename string) ([]byte, error) {
 
 // DaemonConfig holds daemon configuration
 type DaemonConfig struct {
-	ListenAddr  string
-	ConnectAddr string
-	PeerKeyFile string
-	KeyFile     string
-	Interval    int    // seconds between exchanges
-	PeerName    string // output PSK file path
+	ListenAddr        string
+	ConnectAddr       string
+	PeerKeyFile       string
+	KeyFile           string
+	Interval          int    // seconds between exchanges
+	PeerName          string // output PSK file path
+	WgInterface       string // WireGuard interface name (optional)
+	WgPeerPublicKey   string // WireGuard peer public key (optional)
 }
 
 // Daemon represents the running daemon
@@ -609,15 +611,24 @@ func (d *Daemon) updateKey(sharedKey []byte, isRandom bool) {
 	d.sharedKey = sharedKey
 	d.keysMu.Unlock()
 
-	// Save to disk at specified output path
-	pskFile := d.config.PeerName
-	if err := SaveSharedKeyPSK(pskFile, sharedKey); err != nil {
-		log.Printf("Failed to save PSK: %v", err)
-	} else {
-		if isRandom {
-			log.Printf("Saved random fallback PSK to %s", pskFile)
+	// Save to disk at specified output path (if configured)
+	if d.config.PeerName != "" {
+		pskFile := d.config.PeerName
+		if err := SaveSharedKeyPSK(pskFile, sharedKey); err != nil {
+			log.Printf("Failed to save PSK: %v", err)
 		} else {
-			log.Printf("Saved shared PSK to %s", pskFile)
+			if isRandom {
+				log.Printf("Saved random fallback PSK to %s", pskFile)
+			} else {
+				log.Printf("Saved shared PSK to %s", pskFile)
+			}
+		}
+	}
+
+	// Inject into WireGuard if configured
+	if d.config.WgInterface != "" && d.config.WgPeerPublicKey != "" {
+		if err := InjectWireGuardPSK(d.config.WgInterface, d.config.WgPeerPublicKey, sharedKey); err != nil {
+			log.Printf("Failed to inject PSK into WireGuard: %v", err)
 		}
 	}
 }

@@ -214,17 +214,32 @@ var daemonCmd = &cobra.Command{
 		if peerPublicKey == "" {
 			return fmt.Errorf("--peer-public-key / -p flag is required")
 		}
-		if output == "" {
-			return fmt.Errorf("--output / -o flag is required")
+
+		wgInterface, _ := cmd.Flags().GetString("wg-interface")
+		wgPeerPublicKey, _ := cmd.Flags().GetString("wg-peer-public-key")
+
+		// Validate that at least one output method is configured
+		hasOutputPSK := output != ""
+		hasWireGuard := wgInterface != "" && wgPeerPublicKey != ""
+
+		if !hasOutputPSK && !hasWireGuard {
+			return fmt.Errorf("either --output / -o or both --wg-interface and --wg-peer-public-key must be specified")
+		}
+
+		// If WireGuard is partially configured, require both fields
+		if (wgInterface != "" && wgPeerPublicKey == "") || (wgInterface == "" && wgPeerPublicKey != "") {
+			return fmt.Errorf("both --wg-interface and --wg-peer-public-key must be set together")
 		}
 
 		config := DaemonConfig{
-			ListenAddr:  listenAddr,
-			ConnectAddr: endpoint,
-			PeerKeyFile: peerPublicKey,
-			KeyFile:     privateKey,
-			Interval:    interval,
-			PeerName:    output,
+			ListenAddr:      listenAddr,
+			ConnectAddr:     endpoint,
+			PeerKeyFile:     peerPublicKey,
+			KeyFile:         privateKey,
+			Interval:        interval,
+			PeerName:        output,
+			WgInterface:     wgInterface,
+			WgPeerPublicKey: wgPeerPublicKey,
 		}
 
 		daemon, err := NewDaemon(config)
@@ -247,8 +262,10 @@ func init() {
 	daemonCmd.Flags().StringP("endpoint", "e", "127.0.0.1:8001", "Peer endpoint address (single-peer mode)")
 	daemonCmd.Flags().StringP("private-key", "k", "", "Path to our private key file (required in single-peer mode)")
 	daemonCmd.Flags().StringP("peer-public-key", "p", "", "Path to peer's public key file (required in single-peer mode)")
-	daemonCmd.Flags().StringP("output", "o", "", "Output PSK file path (required in single-peer mode)")
+	daemonCmd.Flags().StringP("output", "o", "", "Output PSK file path (optional if using WireGuard)")
 	daemonCmd.Flags().IntP("interval", "i", 120, "Key exchange interval in seconds (single-peer mode)")
+	daemonCmd.Flags().String("wg-interface", "", "WireGuard interface name to inject PSK into (required with --wg-peer-public-key)")
+	daemonCmd.Flags().String("wg-peer-public-key", "", "WireGuard peer public key for PSK injection (required with --wg-interface)")
 
 	// Add commands to root
 	rootCmd.AddCommand(genkeyCmd)
