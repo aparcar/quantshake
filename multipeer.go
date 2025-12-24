@@ -470,9 +470,18 @@ func (mpd *MultiPeerDaemon) saveSharedKey(ph *PeerHandler, sharedKey []byte) err
 	ph.sharedKey = sharedKey
 	ph.keysMu.Unlock()
 
-	// Save to disk at specified output path
-	if err := SaveSharedKeyPSK(ph.config.OutputPSK, sharedKey); err != nil {
-		return err
+	// Save to disk at specified output path (if configured)
+	if ph.config.OutputPSK != "" {
+		if err := SaveSharedKeyPSK(ph.config.OutputPSK, sharedKey); err != nil {
+			return err
+		}
+	}
+
+	// Inject into WireGuard if configured
+	if ph.config.WgInterface != "" && ph.config.WgPeerPublicKey != "" {
+		if err := InjectWireGuardPSK(ph.config.WgInterface, ph.config.WgPeerPublicKey, sharedKey); err != nil {
+			log.Printf("[%s] Failed to inject PSK into WireGuard: %v", ph.name, err)
+		}
 	}
 
 	return nil
@@ -490,11 +499,20 @@ func (mpd *MultiPeerDaemon) setRandomKey(ph *PeerHandler) {
 	ph.sharedKey = randomKey
 	ph.keysMu.Unlock()
 
-	// Save to disk
-	if err := SaveSharedKeyPSK(ph.config.OutputPSK, randomKey); err != nil {
-		log.Printf("[%s] Failed to save random fallback PSK: %v", ph.name, err)
-	} else {
-		log.Printf("[%s] Saved random fallback PSK to %s", ph.name, ph.config.OutputPSK)
+	// Save to disk (if configured)
+	if ph.config.OutputPSK != "" {
+		if err := SaveSharedKeyPSK(ph.config.OutputPSK, randomKey); err != nil {
+			log.Printf("[%s] Failed to save random fallback PSK: %v", ph.name, err)
+		} else {
+			log.Printf("[%s] Saved random fallback PSK to %s", ph.name, ph.config.OutputPSK)
+		}
+	}
+
+	// Inject into WireGuard if configured
+	if ph.config.WgInterface != "" && ph.config.WgPeerPublicKey != "" {
+		if err := InjectWireGuardPSK(ph.config.WgInterface, ph.config.WgPeerPublicKey, randomKey); err != nil {
+			log.Printf("[%s] Failed to inject random fallback PSK into WireGuard: %v", ph.name, err)
+		}
 	}
 }
 

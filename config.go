@@ -21,11 +21,13 @@ type DaemonGlobalConfig struct {
 
 // PeerConfig represents configuration for a single peer
 type PeerConfig struct {
-	Name      string `toml:"name"`       // Peer identifier
-	PublicKey string `toml:"public_key"` // Path to peer's public key
-	Endpoint  string `toml:"endpoint"`   // Peer's address (host:port) - optional if only accepting
-	OutputPSK string `toml:"output_psk"` // Where to save the shared PSK
-	Interval  int    `toml:"interval"`   // Override default interval (optional, 0 = use default)
+	Name             string `toml:"name"`                 // Peer identifier
+	PublicKey        string `toml:"public_key"`           // Path to peer's public key
+	Endpoint         string `toml:"endpoint"`             // Peer's address (host:port) - optional if only accepting
+	OutputPSK        string `toml:"output_psk"`           // Where to save the shared PSK
+	Interval         int    `toml:"interval"`             // Override default interval (optional, 0 = use default)
+	WgInterface      string `toml:"wg_interface"`         // WireGuard interface name (optional)
+	WgPeerPublicKey  string `toml:"wg_peer_public_key"`   // WireGuard peer public key (optional)
 }
 
 // LoadConfig loads configuration from a TOML file
@@ -74,8 +76,21 @@ func (c *Config) Validate() error {
 		if peer.PublicKey == "" {
 			return fmt.Errorf("peer '%s': public_key is required", peer.Name)
 		}
-		if peer.OutputPSK == "" {
-			return fmt.Errorf("peer '%s': output_psk is required", peer.Name)
+
+		// If WireGuard is partially configured, require both fields
+		hasWgInterface := peer.WgInterface != ""
+		hasWgPeerKey := peer.WgPeerPublicKey != ""
+		
+		if hasWgInterface != hasWgPeerKey {
+			return fmt.Errorf("peer '%s': both wg_interface and wg_peer_public_key must be set together", peer.Name)
+		}
+
+		// Validate that at least one output method is configured
+		hasOutputPSK := peer.OutputPSK != ""
+		hasWireGuard := hasWgInterface && hasWgPeerKey
+		
+		if !hasOutputPSK && !hasWireGuard {
+			return fmt.Errorf("peer '%s': either output_psk or both wg_interface and wg_peer_public_key must be configured", peer.Name)
 		}
 
 		// Track if we have any outgoing peers
