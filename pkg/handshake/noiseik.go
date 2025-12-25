@@ -243,8 +243,8 @@ func (i *Initiator) BuildMsg1() (*Msg1, error) {
 		return nil, fmt.Errorf("ss encapsulation failed: %w", err)
 	}
 	defer zeroBytes(ssSS)
-	i.ks.mixKey(ssSS)
 	i.ks.mixHash(ctSS)
+	i.ks.mixKey(ssSS)
 
 	// Generate ephemeral key
 	eiPk, eiSk, err := i.kem.GenerateKey(rand.Reader)
@@ -411,8 +411,8 @@ func (r *Responder) BuildMsg2() (*Msg2, error) {
 		return nil, fmt.Errorf("ee encapsulation failed: %w", err)
 	}
 	defer zeroBytes(ssEE)
-	r.ks.mixKey(ssEE)
 	r.ks.mixHash(ctEE)
+	r.ks.mixKey(ssEE)
 
 	// <- skem (encapsulate to initiator's static key)
 	ctSE, ssSE, err := r.kem.Encapsulate(r.si, rand.Reader)
@@ -420,8 +420,8 @@ func (r *Responder) BuildMsg2() (*Msg2, error) {
 		return nil, fmt.Errorf("se encapsulation failed: %w", err)
 	}
 	defer zeroBytes(ssSE)
-	r.ks.mixKey(ssSE)
 	r.ks.mixHash(ctSE)
+	r.ks.mixKey(ssSE)
 
 	// Finalize transcript and derive single key
 	r.hFinal = append([]byte{}, r.ks.h...)
