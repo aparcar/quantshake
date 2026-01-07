@@ -54,10 +54,9 @@ Based on post-quantum IK pattern (pqIK) with KEMs for identity hiding and peer i
 ```
 <- ekem, skem
 ```
-- `ER`: Responder's ephemeral public key
-- `CT_ee`: EKEM - Responder ephemeral encapsulates to initiator's ephemeral key
-- `CT_se`: SKEM - Responder static encapsulates to initiator's static key
-- **Key schedule**: mixHash(ER), mixKey(ss_ee), mixHash(CT_ee), mixKey(ss_se), mixHash(CT_se)
+- `CT_ee`: EKEM - Responder encapsulates to initiator's ephemeral key
+- `CT_se`: SKEM - Responder encapsulates to initiator's static key
+- **Key schedule**: mixKey(ss_ee), mixHash(CT_ee), mixKey(ss_se), mixHash(CT_se)
 - Both parties derive the **32-byte shared key** using HKDF-Expand(ck, "shared", 32)
 
 **Message 3** (Initiator → Responder)
@@ -270,8 +269,8 @@ QuantShake implements a post-quantum IK handshake pattern optimized for KEMs:
 - **Peer identification**: Responder can identify which peer is connecting after decrypting Message 1
 - **Three KEM operations**: Optimized for post-quantum efficiency
   - skem (Msg1): Initiator static → responder static (authentication, starts encryption)
-  - ekem (Msg2): Responder ephemeral → initiator ephemeral (forward secrecy)
-  - skem (Msg2): Responder static → initiator static (authentication)
+  - ekem (Msg2): Encapsulate to initiator ephemeral (forward secrecy)
+  - skem (Msg2): Encapsulate to initiator static (authentication)
 - **Key schedule**: HKDF-based (HMAC-SHA256) with chaining key and hash
 - **AEAD encryption**: ChaCha20-Poly1305 for encrypting initiator's static key and Message 3
 - **Three-message pattern**: Essential for full mutual authentication with PQC
@@ -283,9 +282,8 @@ QuantShake implements a post-quantum IK handshake pattern optimized for KEMs:
 | Msg1 | I → R | skem | Initiator static → responder static (authentication, starts encryption) |
 | Msg1 | I → R | e | Initiator ephemeral public key (in cleartext) |
 | Msg1 | I → R | encrypt(SI) | Encrypted initiator static key (identity hiding) |
-| Msg2 | R → I | e | Responder ephemeral public key (in cleartext) |
-| Msg2 | R → I | ekem | Responder ephemeral → initiator ephemeral (forward secrecy) |
-| Msg2 | R → I | skem | Responder static → initiator static (authentication) |
+| Msg2 | R → I | ekem | Encapsulate to initiator ephemeral (forward secrecy) |
+| Msg2 | R → I | skem | Encapsulate to initiator static (authentication) |
 
 ### Key Derivation
 
