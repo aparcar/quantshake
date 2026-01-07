@@ -79,8 +79,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Bob failed to build Msg2: %v", err)
 	}
-	fmt.Printf("✓ Bob sends: ephemeral key + EKEM + SKEM\n")
-	fmt.Printf("  - Ephemeral key: %d bytes\n", len(msg2.ER))
+	fmt.Printf("✓ Bob sends: EKEM + SKEM\n")
 	fmt.Printf("  - CTee (EKEM): %d bytes\n", len(msg2.CTee))
 	fmt.Printf("  - CTse (SKEM): %d bytes\n\n", len(msg2.CTse))
 

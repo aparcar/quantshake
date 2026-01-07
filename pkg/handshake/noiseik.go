@@ -207,7 +207,6 @@ type Msg1 struct {
 }
 
 type Msg2 struct {
-	ER   []byte // responder ephemeral public key
 	CTee []byte // EKEM ciphertext (encapsulated to initiator's ephemeral key)
 	CTse []byte // SKEM ciphertext (encapsulated to initiator's static key)
 }
@@ -266,14 +265,6 @@ func (i *Initiator) BuildMsg1() (*Msg1, error) {
 }
 
 func (i *Initiator) ProcessMsg2(m2 *Msg2) error {
-	// Validate responder's ephemeral public key
-	if err := i.kem.ValidatePublicKey(m2.ER); err != nil {
-		return fmt.Errorf("invalid responder ephemeral public key: %w", err)
-	}
-
-	// <- e
-	i.ks.mixHash(m2.ER)
-
 	// <- ekem (decapsulate with initiator's ephemeral key)
 	i.ks.mixHash(m2.CTee)
 	ssEE, err := i.kem.Decapsulate(m2.CTee, i.ei.Sk)
@@ -395,16 +386,6 @@ func (r *Responder) GetInitiatorStaticKey() []byte {
 }
 
 func (r *Responder) BuildMsg2() (*Msg2, error) {
-	// Generate responder ephemeral key
-	erPk, erSk, err := r.kem.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("ephemeral key generation failed: %w", err)
-	}
-	defer zeroBytes(erSk) // Will be zeroed after use, not stored
-
-	// <- e
-	r.ks.mixHash(erPk)
-
 	// <- ekem (encapsulate to initiator's ephemeral key)
 	ctEE, ssEE, err := r.kem.Encapsulate(r.ei, rand.Reader)
 	if err != nil {
@@ -427,7 +408,7 @@ func (r *Responder) BuildMsg2() (*Msg2, error) {
 	r.hFinal = append([]byte{}, r.ks.h...)
 	r.sharedKey = hkdfExpand(r.ks.ck, []byte("shared"), 32)
 
-	return &Msg2{ER: erPk, CTee: ctEE, CTse: ctSE}, nil
+	return &Msg2{CTee: ctEE, CTse: ctSE}, nil
 }
 
 func (r *Responder) ProcessMsg3(m3 *Msg3) error {

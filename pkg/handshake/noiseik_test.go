@@ -276,9 +276,6 @@ func TestFullHandshake(t *testing.T) {
 		t.Fatalf("BuildMsg2 failed: %v", err)
 	}
 
-	if msg2.ER == nil || len(msg2.ER) != kem.pkSize {
-		t.Errorf("Msg2.ER has wrong size: got %d, want %d", len(msg2.ER), kem.pkSize)
-	}
 	if msg2.CTee == nil || len(msg2.CTee) != kem.ctSize {
 		t.Errorf("Msg2.CTee has wrong size: got %d, want %d", len(msg2.CTee), kem.ctSize)
 	}
