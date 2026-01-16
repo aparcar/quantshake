@@ -280,12 +280,21 @@ func (mpd *MultiPeerDaemon) routeConnection(conn net.Conn) {
 func (mpd *MultiPeerDaemon) handleIncomingHandshake(conn net.Conn) error {
 	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
 
-	// Create responder (IK pattern - we don't know initiator's key yet)
+	// Collect all known peer public keys for responder lookup
+	mpd.mu.RLock()
+	knownPeers := make([][]byte, 0, len(mpd.peers))
+	for _, peer := range mpd.peers {
+		knownPeers = append(knownPeers, peer.peerPublicKey)
+	}
+	mpd.mu.RUnlock()
+
+	// Create responder with known peer public keys
 	prologue := []byte("pqc-key-exchange-v2")
 	resp, err := handshake.NewResponder(
 		handshake.KeyPair{Sk: mpd.mySecretKey, Pk: mpd.myPublicKey},
 		mpd.kem,
 		prologue,
+		knownPeers,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create responder: %w", err)

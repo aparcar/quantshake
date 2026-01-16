@@ -97,14 +97,14 @@ func LoadSharedKeyPSK(filename string) ([]byte, error) {
 
 // DaemonConfig holds daemon configuration
 type DaemonConfig struct {
-	ListenAddr        string
-	ConnectAddr       string
-	PeerKeyFile       string
-	KeyFile           string
-	Interval          int    // seconds between exchanges
-	PeerName          string // output PSK file path
-	WgInterface       string // WireGuard interface name (optional)
-	WgPeerPublicKey   string // WireGuard peer public key (optional)
+	ListenAddr      string
+	ConnectAddr     string
+	PeerKeyFile     string
+	KeyFile         string
+	Interval        int    // seconds between exchanges
+	PeerName        string // output PSK file path
+	WgInterface     string // WireGuard interface name (optional)
+	WgPeerPublicKey string // WireGuard peer public key (optional)
 }
 
 // Daemon represents the running daemon
@@ -519,9 +519,9 @@ func (d *Daemon) handleResponderRole(conn net.Conn) {
 func (d *Daemon) performResponderHandshake(conn net.Conn) error {
 	_ = conn.SetDeadline(time.Now().Add(30 * time.Second)) // Best effort deadline
 
-	// Create responder with prologue (IK pattern - we don't know initiator's key yet)
+	// Create responder with prologue and known peer public key
 	prologue := []byte("pqc-key-exchange-v2")
-	resp, err := handshake.NewResponder(handshake.KeyPair{Sk: d.mySecretKey, Pk: d.myPublicKey}, d.kem, prologue)
+	resp, err := handshake.NewResponder(handshake.KeyPair{Sk: d.mySecretKey, Pk: d.myPublicKey}, d.kem, prologue, [][]byte{d.peerPublicKey})
 	if err != nil {
 		return fmt.Errorf("failed to create responder: %w", err)
 	}

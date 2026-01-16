@@ -207,9 +207,10 @@ type Initiator struct {
 
 // Responder
 type Responder struct {
-	sr  KeyPair
-	si  []byte
-	kem KEM
+	sr         KeyPair
+	si         []byte
+	kem        KEM
+	knownPeers map[[sha256.Size]byte][]byte // hash(pk) -> pk lookup for known initiators
 
 	ei []byte // from Msg1
 
@@ -223,7 +224,7 @@ type Responder struct {
 type Msg1 struct {
 	CTss  []byte // SKEM ciphertext (encapsulated to responder's static key)
 	EI    []byte // initiator ephemeral public key
-	EncSI []byte // encrypted initiator static public key
+	EncSI []byte // encrypted hash of initiator static public key (32 bytes + auth tag)
 }
 
 type Msg2 struct {
@@ -275,10 +276,12 @@ func (i *Initiator) BuildMsg1() (*Msg1, error) {
 	// -> e
 	i.ks.mixHash(i.ei.Pk)
 
-	// -> s (encrypted initiator static public key)
-	encSI, err := i.ks.encryptAndHash(i.si.Pk)
+	// -> s (encrypted hash of initiator static public key)
+	// Only send hash since responder already knows our full public key
+	siHash := sha256.Sum256(i.si.Pk)
+	encSI, err := i.ks.encryptAndHash(siHash[:])
 	if err != nil {
-		return nil, fmt.Errorf("failed to encrypt static key: %w", err)
+		return nil, fmt.Errorf("failed to encrypt static key hash: %w", err)
 	}
 
 	return &Msg1{CTss: ctSS, EI: i.ei.Pk, EncSI: encSI}, nil
@@ -347,19 +350,31 @@ func (i *Initiator) Destroy() {
 
 // ------------------------ Responder ------------------------
 
-// NewResponder creates a new responder for IK pattern
-// In IK, the responder doesn't know the initiator's static key yet
-func NewResponder(sr KeyPair, kem KEM, prologue []byte) (*Responder, error) {
+// NewResponder creates a new responder for IK pattern.
+// knownInitiators contains the public keys of allowed initiators.
+// The initiator sends only a hash of their static key, which is looked up
+// in this map to retrieve the full public key for encapsulation.
+func NewResponder(sr KeyPair, kem KEM, prologue []byte, knownInitiators [][]byte) (*Responder, error) {
 	// Validate our own static public key
 	if err := kem.ValidatePublicKey(sr.Pk); err != nil {
 		return nil, fmt.Errorf("invalid responder public key: %w", err)
+	}
+
+	// Build lookup map: hash(pk) -> pk
+	knownPeers := make(map[[sha256.Size]byte][]byte, len(knownInitiators))
+	for _, pk := range knownInitiators {
+		if err := kem.ValidatePublicKey(pk); err != nil {
+			return nil, fmt.Errorf("invalid known initiator public key: %w", err)
+		}
+		h := sha256.Sum256(pk)
+		knownPeers[h] = pk
 	}
 
 	ks := newKeySchedule("pqIK_PQKEM_ChaChaPoly_SHA256")
 	ks.mixHash(prologue)
 	// Pre-message in IK: <- s (only responder's static key is known)
 	ks.mixHash(sr.Pk)
-	return &Responder{sr: sr, kem: kem, ks: ks}, nil
+	return &Responder{sr: sr, kem: kem, ks: ks, knownPeers: knownPeers}, nil
 }
 
 func (r *Responder) ProcessMsg1(m1 *Msg1) error {
@@ -381,15 +396,18 @@ func (r *Responder) ProcessMsg1(m1 *Msg1) error {
 	r.ei = m1.EI
 	r.ks.mixHash(m1.EI)
 
-	// -> s (decrypt initiator static public key)
-	siPk, err := r.ks.decryptAndHash(m1.EncSI)
+	// -> s (decrypt hash of initiator static public key and look up full key)
+	siHash, err := r.ks.decryptAndHash(m1.EncSI)
 	if err != nil {
-		return fmt.Errorf("failed to decrypt static key: %w", err)
+		return fmt.Errorf("failed to decrypt static key hash: %w", err)
 	}
 
-	// Validate initiator's static public key
-	if err := r.kem.ValidatePublicKey(siPk); err != nil {
-		return fmt.Errorf("invalid initiator static public key: %w", err)
+	// Look up initiator's full public key by hash
+	var hashKey [sha256.Size]byte
+	copy(hashKey[:], siHash)
+	siPk, ok := r.knownPeers[hashKey]
+	if !ok {
+		return fmt.Errorf("unknown initiator: public key hash not in known peers")
 	}
 	r.si = siPk
 

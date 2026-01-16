@@ -47,6 +47,7 @@ func main() {
 		handshake.KeyPair{Pk: bobPub, Sk: bobSec},
 		kemAlgo,
 		prologue,
+		[][]byte{alicePub}, // Known initiators
 	)
 
 	// ===== Message 1: Alice -> Bob =====
@@ -55,23 +56,22 @@ func main() {
 	if err != nil {
 		log.Fatalf("Alice failed to build Msg1: %v", err)
 	}
-	fmt.Printf("✓ Alice sends: SKEM + ephemeral key + encrypted static key\n")
+	fmt.Printf("✓ Alice sends: SKEM + ephemeral key + encrypted static key hash\n")
 	fmt.Printf("  - CTss (SKEM): %d bytes\n", len(msg1.CTss))
 	fmt.Printf("  - Ephemeral key: %d bytes\n", len(msg1.EI))
-	fmt.Printf("  - Encrypted static key: %d bytes\n\n", len(msg1.EncSI))
+	fmt.Printf("  - Encrypted static key hash: %d bytes\n\n", len(msg1.EncSI))
 
 	// Bob processes Message 1 and can now identify Alice
 	if err := bob.ProcessMsg1(msg1); err != nil {
 		log.Fatalf("Bob failed to process Msg1: %v", err)
 	}
-	
+
 	// Bob extracts and verifies Alice's identity
 	aliceIdentity := bob.GetInitiatorStaticKey()
 	fmt.Printf("✓ Bob identified initiator (Alice's public key extracted)\n")
 	fmt.Printf("  - Alice's static key matches: %v\n\n", bytes.Equal(aliceIdentity, alicePub))
 	fmt.Println("✓ Bob processed Message 1")
 	fmt.Println()
-
 
 	// ===== Message 2: Bob -> Alice =====
 	fmt.Println("--- Message 2: Bob -> Alice ---")
@@ -90,7 +90,6 @@ func main() {
 	fmt.Println("✓ Alice processed Message 2")
 	fmt.Println("✓ Alice and Bob both derived shared keys")
 	fmt.Println()
-
 
 	// ===== Message 3: Alice -> Bob (Acknowledgment) =====
 	fmt.Println("--- Message 3: Alice -> Bob (Acknowledgment) ---")
