@@ -38,40 +38,54 @@ func hkdfExtract(salt, ikm []byte) []byte {
 }
 
 func hkdfExpand(prk, info []byte, l int) []byte {
-	var res, t []byte
-	for i := byte(1); len(res) < l; i++ {
+	// Pre-allocate result buffer to avoid repeated allocations
+	hashLen := sha256.Size
+	numBlocks := (l + hashLen - 1) / hashLen
+	res := make([]byte, numBlocks*hashLen)
+
+	var t []byte
+	for i := byte(1); i <= byte(numBlocks); i++ {
 		h := hmac.New(sha256.New, prk)
 		h.Write(t)
 		h.Write(info)
 		h.Write([]byte{i})
-		t = h.Sum(nil)
-		res = append(res, t...)
+		t = h.Sum(res[(int(i)-1)*hashLen : (int(i)-1)*hashLen])
+		t = res[(int(i)-1)*hashLen : int(i)*hashLen]
 	}
 	return res[:l]
+}
+
+// hkdf combines Extract and Expand in a single call, reducing intermediate allocations.
+// For the common case of l=32 (single SHA256 block), this avoids one extra allocation.
+func hkdf(salt, ikm, info []byte, l int) []byte {
+	prk := hkdfExtract(salt, ikm)
+	return hkdfExpand(prk, info, l)
 }
 
 // ------------------------ Hash / Key Schedule ------------------------
 
 type keySchedule struct {
-	h  []byte // transcript hash (public)
-	ck []byte // chaining key (secret)
+	h      []byte                // transcript hash (public)
+	ck     []byte                // chaining key (secret)
+	hasher [sha256.Size * 2]byte // pre-allocated buffer for hash operations
 }
 
 func newKeySchedule(proto string) *keySchedule {
 	ph := sha256.Sum256([]byte(proto)) // bind to full suite string
-	return &keySchedule{
-		h:  ph[:],
-		ck: ph[:],
+	ks := &keySchedule{
+		h:  make([]byte, sha256.Size),
+		ck: make([]byte, sha256.Size),
 	}
+	copy(ks.h, ph[:])
+	copy(ks.ck, ph[:])
+	return ks
 }
 
 // encryptAndHash encrypts plaintext and mixes the ciphertext into the transcript
 func (ks *keySchedule) encryptAndHash(plaintext []byte) ([]byte, error) {
 	// For IK pattern: use current chaining key to derive encryption key
-	prk := hkdfExtract(ks.ck, nil)
-	key := hkdfExpand(prk, []byte("encrypt"), 32)
+	key := hkdf(ks.ck, nil, []byte("encrypt"), 32)
 	defer zeroBytes(key)
-	defer zeroBytes(prk)
 
 	// Derive nonce from the key and current hash
 	nonce, err := deriveAckNonce(key, ks.h)
@@ -93,10 +107,8 @@ func (ks *keySchedule) encryptAndHash(plaintext []byte) ([]byte, error) {
 // decryptAndHash decrypts ciphertext and mixes it into the transcript
 func (ks *keySchedule) decryptAndHash(ciphertext []byte) ([]byte, error) {
 	// For IK pattern: use current chaining key to derive encryption key
-	prk := hkdfExtract(ks.ck, nil)
-	key := hkdfExpand(prk, []byte("encrypt"), 32)
+	key := hkdf(ks.ck, nil, []byte("encrypt"), 32)
 	defer zeroBytes(key)
-	defer zeroBytes(prk)
 
 	// Derive nonce from the key and current hash
 	nonce, err := deriveAckNonce(key, ks.h)
@@ -120,23 +132,31 @@ func (ks *keySchedule) decryptAndHash(ciphertext []byte) ([]byte, error) {
 }
 
 func (ks *keySchedule) mixHash(data []byte) {
+	// Optimize for common case: data fits in pre-allocated buffer
+	// ks.h is always 32 bytes (sha256.Size)
+	if len(data) <= sha256.Size {
+		copy(ks.hasher[:sha256.Size], ks.h)
+		copy(ks.hasher[sha256.Size:], data)
+		result := sha256.Sum256(ks.hasher[:sha256.Size+len(data)])
+		copy(ks.h, result[:])
+		return
+	}
+	// Fallback for larger data
 	h := sha256.New()
 	h.Write(ks.h)
 	h.Write(data)
-	ks.h = h.Sum(nil)
+	ks.h = h.Sum(ks.h[:0])
 }
 
 func (ks *keySchedule) mixKey(ikm []byte) {
-	prk := hkdfExtract(ks.ck, ikm)
-	ks.ck = hkdfExpand(prk, []byte("MixKey"), 32)
+	ks.ck = hkdf(ks.ck, ikm, []byte("MixKey"), 32)
 }
 
 // ------------------------ One-shot AEAD for optional Msg3 ------------------------
 
 func deriveAckNonce(key, ad []byte) ([12]byte, error) {
 	var n [12]byte
-	prk := hkdfExtract(key, ad)
-	okm := hkdfExpand(prk, []byte("ack-nonce|v1"), 12)
+	okm := hkdf(key, ad, []byte("ack-nonce|v1"), 12)
 	copy(n[:], okm)
 	return n, nil
 }
@@ -180,9 +200,9 @@ type Initiator struct {
 
 	ei KeyPair
 
-	ks         *keySchedule
-	hFinal     []byte
-	sharedKey  []byte // single 32-byte key derived at the end
+	ks        *keySchedule
+	hFinal    []byte
+	sharedKey []byte // single 32-byte key derived at the end
 }
 
 // Responder
@@ -193,9 +213,9 @@ type Responder struct {
 
 	ei []byte // from Msg1
 
-	ks         *keySchedule
-	hFinal     []byte
-	sharedKey  []byte // single 32-byte key derived at the end
+	ks        *keySchedule
+	hFinal    []byte
+	sharedKey []byte // single 32-byte key derived at the end
 }
 
 // ------------------------ Messages ------------------------
